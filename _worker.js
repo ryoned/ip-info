@@ -7,7 +7,7 @@ export default {
 
     // --- 后端 API 接口 ---
 
-    // 1. TCP 延迟检测 (已增加 Cloudflare IP 支持)
+    // 1. TCP 延迟检测
     if (path === '/api/tcping') {
       const target = url.searchParams.get('target');
       const port = parseInt(url.searchParams.get('port')) || 443;
@@ -15,32 +15,26 @@ export default {
 
       const start = performance.now();
       try {
-        // 优先尝试标准 TCP 连接
         const socket = connect({ hostname: target, port: port });
         await Promise.race([
           socket.opened,
-          new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 2500))
+          new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 3000))
         ]);
         const rtt = Math.round(performance.now() - start);
         socket.close();
-        return new Response(JSON.stringify({ status: 'success', rtt, type: 'TCP' }), {
+        return new Response(JSON.stringify({ status: 'success', rtt }), {
           headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
         });
       } catch (e) {
-        // TCP 失败，可能是 Cloudflare IP 禁止自连，尝试 HTTP 降级探测
+        // TCP 失败，针对 Cloudflare IP 开启 HTTP 降级探测
         try {
           const fetchStart = performance.now();
-          // 请求 CF 的 trace 页面 (允许自连)
-          await fetch(`https://${target}/cdn-cgi/trace`, { 
-            method: 'HEAD', 
-            cache: 'no-store' 
-          });
+          await fetch(`https://${target}/cdn-cgi/trace`, { method: 'HEAD', cache: 'no-store' });
           const rtt = Math.round(performance.now() - fetchStart);
           return new Response(JSON.stringify({ status: 'success', rtt, type: 'HTTP(CF)' }), {
             headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
           });
-        } catch (fetchErr) {
-          // 真的连不上
+        } catch (err) {
           return new Response(JSON.stringify({ status: 'error', message: e.message }), {
             headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
           });
@@ -48,12 +42,12 @@ export default {
       }
     }
 
-    // 2. 地理位置查询
+    // 2. 地理位置查询 (更换为更精准的 ip.sb)
     if (path === '/api/geoip') {
       const target = url.searchParams.get('target');
       if (!target) return new Response('Missing target', { status: 400 });
       try {
-        const response = await fetch(`http://ip-api.com/json/${target}?lang=zh-CN`);
+        const response = await fetch(`https://api.ip.sb/geoip/${target}`);
         const data = await response.json();
         return new Response(JSON.stringify(data), {
           headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
@@ -63,7 +57,7 @@ export default {
       }
     }
 
-    // 3. 域名解析 (保持之前的 DoH 逻辑)
+    // 3. 域名解析 (获取所有IP)
     if (path === '/api/resolve') {
       const domain = url.searchParams.get('domain');
       if (!domain) return new Response('Missing domain', { status: 400 });
@@ -79,7 +73,7 @@ export default {
       }
     }
 
-    // --- 前端页面渲染 (保持不变) ---
+    // --- 前端页面渲染 ---
     const currentColo = request.cf?.colo || '未知';
     const currentCity = request.cf?.city || '未知';
     const currentCountry = request.cf?.country || '未知';
@@ -91,7 +85,7 @@ export default {
   }
 };
 
-// 域名解析辅助函数
+// 域名解析辅助函数 (DoH)
 async function resolveDomain(domain) {
   const endpoints = [
     { url: 'https://dns.google/resolve', name: 'Google' },
@@ -112,6 +106,7 @@ async function resolveDomain(domain) {
       if (ips.size > 0) return Array.from(ips);
     } catch (e) { continue; }
   }
+  // 如果没有任何解析结果，返回域名本身尝试直接连接
   return [domain];
 }
 
@@ -121,7 +116,7 @@ function renderHTML(colo, city, country, ip) {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Link Tracer Batch</title>
+  <title>Advanced Link Tracer</title>
   <style>
     :root { --primary: #06b6d4; --bg: #0f172a; --card: #1e293b; --text: #f1f5f9; --border: #334155; }
     body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 20px; }
@@ -166,7 +161,6 @@ function renderHTML(colo, city, country, ip) {
     .rtt-green { background: rgba(16, 185, 129, 0.2); color: #34d399; }
     .rtt-yellow { background: rgba(245, 158, 11, 0.2); color: #fbbf24; }
     .rtt-red { background: rgba(239, 68, 68, 0.2); color: #f87171; }
-    .type-label { font-size: 10px; opacity: 0.5; margin-left: 4px; border: 1px solid rgba(255,255,255,0.2); padding: 1px 3px; border-radius: 3px; }
     
     .target-sub { font-size: 12px; opacity: 0.6; display: block; margin-top: 2px; }
     .loading-spin { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--primary); border-top-color: transparent; border-radius: 50%; animation: spin 1s linear infinite; }
@@ -343,7 +337,7 @@ function renderHTML(colo, city, country, ip) {
     // 并行执行 TCPing 和 GeoIP
     const cleanIP = realTarget.replace(/[\\[\\]]/g, ''); // 移除IPv6括号
     
-    // 1. TCPing (核心修复：增加 type 字段)
+    // 1. TCPing (已更新支持 CF 降级)
     fetch(\`./api/tcping?target=\${encodeURIComponent(cleanIP)}\`)
       .then(r => r.json())
       .then(d => {
@@ -352,22 +346,21 @@ function renderHTML(colo, city, country, ip) {
           let cls = 'rtt-green';
           if(d.rtt > 100) cls = 'rtt-yellow';
           if(d.rtt > 250) cls = 'rtt-red';
-          // 显示延迟 + 探测类型标签
-          const typeTag = d.type ? \`<span class="type-label">\${d.type}</span>\` : '';
-          el.innerHTML = \`<span class="rtt-badge \${cls}">\${d.rtt} ms</span>\${typeTag}\`;
+          const typeLabel = d.type ? \` <span style="font-size:10px;opacity:0.5">\${d.type}</span>\` : '';
+          el.innerHTML = \`<span class="rtt-badge \${cls}">\${d.rtt} ms</span>\${typeLabel}\`;
         } else {
           el.innerHTML = \`<span style="color:#ef4444; font-size:12px">连接超时</span>\`;
         }
       });
 
-    // 2. GeoIP (机房信息)
+    // 2. GeoIP (机房信息 - 适配 ip.sb 返回的数据结构)
     fetch(\`./api/geoip?target=\${encodeURIComponent(cleanIP)}\`)
       .then(r => r.json())
       .then(d => {
         document.getElementById(\`\${rowId}-geo\`).innerText = \`\${d.country||''} \${d.city||''}\`;
-        // 组合 ISP 和 AS 信息作为"机房信息"
-        const machineRoom = d.isp || d.org || '未知';
-        const asn = d.as ? \`(\${d.as})\` : '';
+        // 组合 ISP 和 AS 信息
+        const machineRoom = d.isp || d.organization || '未知';
+        const asn = d.asn ? \`(\${d.asn})\` : '';
         document.getElementById(\`\${rowId}-isp\`).innerHTML = \`\${machineRoom} <br><span class="target-sub">\${asn}</span>\`;
       });
   }
