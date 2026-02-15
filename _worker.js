@@ -5,9 +5,9 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname;
 
-    // --- 后端 API 逻辑 ---
+    // --- 后端 API 接口 ---
 
-    // 1. TCP 延迟检测 API
+    // 1. TCP 延迟检测
     if (path === '/api/tcping') {
       const target = url.searchParams.get('target');
       const port = parseInt(url.searchParams.get('port')) || 443;
@@ -32,7 +32,7 @@ export default {
       }
     }
 
-    // 2. 地理位置查询 API
+    // 2. 地理位置查询
     if (path === '/api/geoip') {
       const target = url.searchParams.get('target');
       if (!target) return new Response('Missing target', { status: 400 });
@@ -47,11 +47,27 @@ export default {
       }
     }
 
-    // --- 前端 UI 渲染 ---
-    const currentColo = request.cf?.colo || '未知机房';
-    const currentCity = request.cf?.city || '未知城市';
-    const currentCountry = request.cf?.country || '未知国家';
-    const currentIP = request.headers.get('CF-Connecting-IP') || '未知IP';
+    // 3. 域名解析 (获取所有IP)
+    if (path === '/api/resolve') {
+      const domain = url.searchParams.get('domain');
+      if (!domain) return new Response('Missing domain', { status: 400 });
+      try {
+        const ips = await resolveDomain(domain);
+        return new Response(JSON.stringify({ status: 'success', ips }), {
+          headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+        });
+      } catch (e) {
+        return new Response(JSON.stringify({ status: 'error', message: e.message }), {
+          headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+        });
+      }
+    }
+
+    // --- 前端页面渲染 ---
+    const currentColo = request.cf?.colo || '未知';
+    const currentCity = request.cf?.city || '未知';
+    const currentCountry = request.cf?.country || '未知';
+    const currentIP = request.headers.get('CF-Connecting-IP') || '未知';
 
     return new Response(renderHTML(currentColo, currentCity, currentCountry, currentIP), {
       headers: { "Content-Type": "text/html;charset=UTF-8" }
@@ -59,208 +75,288 @@ export default {
   }
 };
 
+// 域名解析辅助函数 (DoH)
+async function resolveDomain(domain) {
+  const endpoints = [
+    { url: 'https://dns.google/resolve', name: 'Google' },
+    { url: 'https://223.5.5.5/resolve', name: 'AliDNS' }
+  ];
+
+  for (const endpoint of endpoints) {
+    try {
+      const [v4, v6] = await Promise.all([
+        fetch(`${endpoint.url}?name=${domain}&type=A`).then(r => r.json()),
+        fetch(`${endpoint.url}?name=${domain}&type=AAAA`).then(r => r.json())
+      ]);
+
+      const ips = new Set();
+      if (v4.Answer) v4.Answer.filter(r => r.type === 1).forEach(r => ips.add(r.data));
+      if (v6.Answer) v6.Answer.filter(r => r.type === 28).forEach(r => ips.add(r.data));
+
+      if (ips.size > 0) return Array.from(ips);
+    } catch (e) { continue; }
+  }
+  // 如果没有任何解析结果，返回域名本身尝试直接连接
+  return [domain];
+}
+
 function renderHTML(colo, city, country, ip) {
   return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Link Tracer - 批量路由分析</title>
+  <title>Advanced Link Tracer</title>
   <style>
-    :root { --primary: #6366f1; --bg: #0f172a; --card: #1e293b; --border: #334155; }
-    body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: #f8fafc; margin: 0; padding: 20px; }
-    .container { width: 100%; max-width: 900px; margin: 0 auto; }
-    .card { background: var(--card); border-radius: 16px; padding: 24px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); margin-bottom: 20px; }
-    h1 { text-align: center; color: var(--primary); margin-bottom: 30px; font-weight: 800; }
+    :root { --primary: #06b6d4; --bg: #0f172a; --card: #1e293b; --text: #f1f5f9; --border: #334155; }
+    body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 20px; }
+    .container { max-width: 1000px; margin: 0 auto; }
     
-    /* 本地信息区域 */
-    .local-info { display: flex; justify-content: space-between; align-items: center; padding: 15px; background: rgba(99, 102, 241, 0.1); border: 1px solid var(--primary); border-radius: 12px; margin-bottom: 25px; }
-    .local-info div { font-size: 14px; }
-    .local-info strong { color: var(--primary); }
+    /* 顶部卡片 */
+    .card { background: var(--card); border-radius: 16px; padding: 24px; box-shadow: 0 4px 20px rgba(0,0,0,0.4); margin-bottom: 20px; border: 1px solid var(--border); }
+    h1 { margin: 0 0 20px 0; font-size: 24px; color: var(--primary); display: flex; align-items: center; gap: 10px; }
+    
+    /* 本地信息条 */
+    .local-bar { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; background: rgba(6, 182, 212, 0.1); padding: 15px; border-radius: 12px; border: 1px solid rgba(6, 182, 212, 0.2); margin-bottom: 25px; }
+    .info-item label { display: block; font-size: 12px; opacity: 0.7; margin-bottom: 4px; }
+    .info-item span { font-weight: 600; font-size: 15px; color: var(--primary); }
 
-    /* 输入区域 */
-    .input-section { margin-bottom: 20px; }
-    textarea { width: 100%; height: 120px; padding: 15px; border-radius: 12px; border: 1px solid var(--border); background: #0f172a; color: white; outline: none; font-family: monospace; resize: vertical; margin-bottom: 15px; box-sizing: border-box; }
+    /* 输入区 */
+    textarea { width: 100%; height: 100px; background: #0f172a; border: 1px solid var(--border); color: white; padding: 15px; border-radius: 12px; font-family: monospace; resize: vertical; box-sizing: border-box; outline: none; transition: 0.2s; }
     textarea:focus { border-color: var(--primary); }
     
-    .action-bar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
-    .btn { padding: 12px 24px; background: var(--primary); color: white; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; transition: 0.2s; }
-    .btn:hover { opacity: 0.9; transform: translateY(-1px); }
-    .btn-secondary { background: #475569; }
+    .controls { margin-top: 15px; display: flex; gap: 10px; flex-wrap: wrap; }
+    .btn { padding: 10px 20px; border-radius: 8px; border: none; font-weight: 600; cursor: pointer; transition: 0.2s; display: inline-flex; align-items: center; gap: 6px; }
+    .btn-primary { background: var(--primary); color: #000; }
+    .btn-primary:hover { filter: brightness(1.1); }
+    .btn-ghost { background: var(--border); color: white; }
+    .btn-ghost:hover { background: #475569; }
     
-    #file-label { cursor: pointer; padding: 12px 20px; background: #334155; border-radius: 8px; font-size: 14px; border: 1px dashed var(--primary); }
     #file-input { display: none; }
-
+    
     /* 历史记录 */
-    .history-tags { margin-top: 10px; display: flex; gap: 8px; }
-    .history-tag { font-size: 12px; background: #334155; padding: 4px 10px; border-radius: 6px; cursor: pointer; }
-    .history-tag:hover { background: var(--primary); }
+    .history { margin-top: 15px; display: flex; gap: 8px; overflow-x: auto; padding-bottom: 5px; }
+    .tag { background: #334155; padding: 4px 10px; border-radius: 20px; font-size: 12px; cursor: pointer; white-space: nowrap; border: 1px solid transparent; }
+    .tag:hover { border-color: var(--primary); color: var(--primary); }
 
-    /* 结果表格 */
-    table { width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 13px; }
-    th { text-align: left; background: #334155; padding: 12px; color: var(--primary); border-bottom: 2px solid var(--bg); }
-    td { padding: 12px; border-bottom: 1px solid var(--border); }
-    .status-ok { color: #10b981; font-weight: bold; }
-    .status-err { color: #ef4444; }
-    .loading-row { opacity: 0.5; }
+    /* 表格区域 */
+    .table-container { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 14px; min-width: 600px; }
+    th { text-align: left; padding: 12px; color: var(--primary); border-bottom: 2px solid var(--border); font-weight: 600; }
+    td { padding: 12px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+    tr:last-child td { border-bottom: none; }
+    
+    /* 状态样式 */
+    .rtt-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-weight: bold; font-size: 13px; }
+    .rtt-green { background: rgba(16, 185, 129, 0.2); color: #34d399; }
+    .rtt-yellow { background: rgba(245, 158, 11, 0.2); color: #fbbf24; }
+    .rtt-red { background: rgba(239, 68, 68, 0.2); color: #f87171; }
+    
+    .target-sub { font-size: 12px; opacity: 0.6; display: block; margin-top: 2px; }
+    .loading-spin { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--primary); border-top-color: transparent; border-radius: 50%; animation: spin 1s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
   </style>
 </head>
 <body>
-  <div class="container">
-    <div class="card">
-      <h1>🌐 Link Tracer Batch</h1>
-      
-      <div class="local-info">
-        <div>📍 当前节点: <strong>${colo}</strong></div>
-        <div>🌍 物理位置: <strong>${country} - ${city}</strong></div>
-        <div>🆔 本机IP: <strong>${ip}</strong></div>
-      </div>
 
-      <div class="input-section">
-        <textarea id="target-area" placeholder="请输入目标地址（域名或IP），一行一个..."></textarea>
-        <div class="action-bar">
-          <button class="btn" onclick="startBatchTrace()">批量追踪</button>
-          <label id="file-label" for="file-input">📄 上传 TXT 列表</label>
-          <input type="file" id="file-input" accept=".txt" onchange="handleFileUpload(this)">
-          <button class="btn btn-secondary" onclick="clearResults()">清空结果</button>
-        </div>
-        <div class="history-tags" id="history-box"></div>
+<div class="container">
+  <div class="card">
+    <h1>📡 Link Tracer <span style="font-size:12px; opacity:0.6; color:var(--text); margin-left:auto;">Advanced</span></h1>
+    <div class="local-bar">
+      <div class="info-item">
+        <label>当前节点 (Colo)</label>
+        <span>${colo}</span>
       </div>
-
-      <div id="results-container" style="display:none">
-        <table>
-          <thead>
-            <tr>
-              <th width="30%">目标地址</th>
-              <th width="15%">延迟 (RTT)</th>
-              <th width="30%">地理位置</th>
-              <th width="25%">运营商/AS</th>
-            </tr>
-          </thead>
-          <tbody id="result-body"></tbody>
-        </table>
+      <div class="info-item">
+        <label>物理位置</label>
+        <span>${country} - ${city}</span>
+      </div>
+      <div class="info-item">
+        <label>本机 IP</label>
+        <span>${ip}</span>
       </div>
     </div>
+
+    <textarea id="input-area" placeholder="输入目标地址（支持域名或IP），一行一个。&#10;例如：&#10;google.com&#10;1.1.1.1"></textarea>
+    
+    <div class="controls">
+      <button class="btn btn-primary" onclick="startBatch()">🚀 开始探测</button>
+      <button class="btn btn-ghost" onclick="document.getElementById('file-input').click()">📂 上传 TXT</button>
+      <input type="file" id="file-input" accept=".txt" onchange="handleFile(this)">
+      <button class="btn btn-ghost" onclick="clearTable()">🗑️ 清空表格</button>
+    </div>
+
+    <div class="history" id="history-box"></div>
   </div>
 
-  <script>
-    const historyBox = document.getElementById('history-box');
-    const targetArea = document.getElementById('target-area');
-    const resultBody = document.getElementById('result-body');
-    const resultContainer = document.getElementById('results-container');
+  <div class="card" id="result-panel" style="display:none;">
+    <div class="table-container">
+      <table>
+        <thead>
+          <tr>
+            <th width="35%">目标地址 (Target)</th>
+            <th width="15%">TCP 延迟</th>
+            <th width="20%">物理位置</th>
+            <th width="30%">运营商 / 机房 (ISP)</th>
+          </tr>
+        </thead>
+        <tbody id="result-body"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
 
-    // 记忆功能逻辑
-    function updateHistory(rawInput) {
-      if(!rawInput) return;
-      let list = JSON.parse(localStorage.getItem('trace_history_batch') || '[]');
-      // 记录整个输入块的前30个字符作为标识
-      const summary = rawInput.split('\\n')[0].substring(0, 20) + (rawInput.includes('\\n') ? '...' : '');
-      list = list.filter(i => i.val !== rawInput);
-      list.unshift({ label: summary, val: rawInput });
-      list = list.slice(0, 3);
-      localStorage.setItem('trace_history_batch', JSON.stringify(list));
-      renderHistory();
-    }
+<script>
+  // 历史记录管理
+  const historyKey = 'tracer_history_v2';
+  const inputArea = document.getElementById('input-area');
+  const resultBody = document.getElementById('result-body');
+  
+  function saveHistory(val) {
+    if(!val) return;
+    let list = JSON.parse(localStorage.getItem(historyKey) || '[]');
+    const preview = val.split('\\n')[0].substring(0, 15) + (val.length>15?'...':'');
+    list = list.filter(i => i.val !== val);
+    list.unshift({ name: preview, val: val });
+    if(list.length > 5) list.pop();
+    localStorage.setItem(historyKey, JSON.stringify(list));
+    renderHistory();
+  }
 
-    function renderHistory() {
-      const list = JSON.parse(localStorage.getItem('trace_history_batch') || '[]');
-      historyBox.innerHTML = list.length > 0 ? '<span>最近记录:</span>' : '';
-      list.forEach(item => {
-        const span = document.createElement('span');
-        span.className = 'history-tag';
-        span.innerText = item.label;
-        span.onclick = () => { targetArea.value = item.val; };
-        historyBox.appendChild(span);
-      });
-    }
-
-    // 文件上传处理
-    function handleFileUpload(input) {
-      const file = input.files[0];
-      if (!file) return;
+  function renderHistory() {
+    const list = JSON.parse(localStorage.getItem(historyKey) || '[]');
+    const box = document.getElementById('history-box');
+    box.innerHTML = list.map(item => 
+      \`<div class="tag" onclick="fillInput('\${encodeURIComponent(item.val)}')">\${item.name}</div>\`
+    ).join('');
+  }
+  
+  window.fillInput = (val) => { inputArea.value = decodeURIComponent(val); }
+  
+  // 文件处理
+  window.handleFile = (input) => {
+    const file = input.files[0];
+    if(file) {
       const reader = new FileReader();
-      reader.onload = (e) => {
-        targetArea.value = e.target.result;
-      };
+      reader.onload = e => inputArea.value = e.target.result;
       reader.readAsText(file);
     }
+  }
 
-    function clearResults() {
-      resultBody.innerHTML = '';
-      resultContainer.style.display = 'none';
+  window.clearTable = () => {
+    resultBody.innerHTML = '';
+    document.getElementById('result-panel').style.display = 'none';
+  }
+
+  // 核心逻辑
+  window.startBatch = async () => {
+    const raw = inputArea.value.trim();
+    if(!raw) return alert('请输入目标地址');
+    saveHistory(raw);
+    
+    document.getElementById('result-panel').style.display = 'block';
+    const lines = raw.split('\\n').map(x => x.trim()).filter(x => x);
+
+    for (const target of lines) {
+      await processLine(target);
     }
+  }
 
-    // 批量执行逻辑
-    async function startBatchTrace() {
-      const content = targetArea.value.trim();
-      if(!content) return alert('请输入目标');
+  async function processLine(target) {
+    // 1. 判断是否需要解析
+    const isIP = /^[0-9\\.:]+$/.test(target);
+    
+    if (isIP) {
+      addResultRow(target, target); // 直接探测IP
+    } else {
+      // 域名：先创建一个"正在解析"的占位行
+      const tempId = 'resolving-' + Math.random().toString(36).substr(2, 9);
+      addPlaceholderRow(target, tempId);
       
-      updateHistory(content);
-      const lines = content.split('\\n').map(l => l.trim()).filter(l => l !== '');
-      
-      resultContainer.style.display = 'block';
-      
-      // 为每个目标创建一行占位符
-      for (const target of lines) {
-        const rowId = 'row-' + btoa(target).substring(0, 10);
-        if (document.getElementById(rowId)) continue; // 避免重复添加
-
-        const tr = document.createElement('tr');
-        tr.id = rowId;
-        tr.className = 'loading-row';
-        tr.innerHTML = \`
-          <td>\${target}</td>
-          <td class="rtt-cell">探测中...</td>
-          <td class="geo-cell">正在查询...</td>
-          <td class="isp-cell">--</td>
-        \`;
-        resultBody.prepend(tr);
-
-        // 异步执行单个探测（不阻塞循环）
-        runSingleTrace(target, rowId);
-      }
-    }
-
-    async function runSingleTrace(target, rowId) {
-      const row = document.getElementById(rowId);
-      const cleanTarget = target.split(':')[0]; // 提取域名或IP，忽略端口输入
-
       try {
-        // 并行请求后端接口
-        const [latRes, geoRes] = await Promise.all([
-          fetch(\`./api/tcping?target=\${encodeURIComponent(cleanTarget)}\`).then(r => r.json()),
-          fetch(\`./api/geoip?target=\${encodeURIComponent(cleanTarget)}\`).then(r => r.json())
-        ]);
-
-        row.className = '';
+        const res = await fetch(\`./api/resolve?domain=\${encodeURIComponent(target)}\`);
+        const data = await res.json();
         
-        // 渲染延迟
-        const rttCell = row.querySelector('.rtt-cell');
-        if(latRes.status === 'success') {
-          rttCell.innerHTML = \`<span class="status-ok">\${latRes.rtt} ms</span>\`;
-        } else {
-          rttCell.innerHTML = \`<span class="status-err">超时</span>\`;
-        }
+        // 移除占位行
+        const placeholder = document.getElementById(tempId);
+        if(placeholder) placeholder.remove();
 
-        // 渲染地理位置和运营商
-        const geoCell = row.querySelector('.geo-cell');
-        const ispCell = row.querySelector('.isp-cell');
-        if(geoRes.status === 'success' || geoRes.query) {
-          geoCell.innerText = \`\${geoRes.country || ''} \${geoRes.city || ''} (\${geoRes.countryCode || '??'})\`;
-          ispCell.innerText = \`\${geoRes.isp || '未知'} (\${geoRes.as || '--'})\`;
+        if (data.status === 'success' && data.ips.length > 0) {
+          // 为每个解析出的IP创建一行
+          for (const ip of data.ips) {
+            addResultRow(\`\${target} (\${ip})\`, ip);
+          }
         } else {
-          geoCell.innerText = '查询失败';
+          // 解析失败，回退到直接探测域名
+          addResultRow(target, target); 
         }
-
       } catch(e) {
-        row.querySelector('.rtt-cell').innerText = '错误';
-        console.error(e);
+        if(document.getElementById(tempId)) document.getElementById(tempId).remove();
+        addResultRow(target + " [解析失败]", target);
       }
     }
+  }
 
-    // 初始化显示
-    renderHistory();
-  </script>
+  function addPlaceholderRow(label, id) {
+    const tr = document.createElement('tr');
+    tr.id = id;
+    tr.innerHTML = \`
+      <td>\${label}</td>
+      <td colspan="3" style="color:#94a3b8"><span class="loading-spin"></span> 正在解析域名下所有IP...</td>
+    \`;
+    resultBody.prepend(tr);
+  }
+
+  function addResultRow(displayLabel, realTarget) {
+    const tr = document.createElement('tr');
+    const rowId = 'row-' + Math.random().toString(36).substr(2, 9);
+    tr.id = rowId;
+    
+    // 初始状态
+    tr.innerHTML = \`
+      <td>
+        <div>\${displayLabel.split(' (')[0]}</div>
+        \${displayLabel.includes('(') ? \`<span class="target-sub">\${displayLabel.split(' (')[1].replace(')', '')}</span>\` : ''}
+      </td>
+      <td id="\${rowId}-rtt"><span class="loading-spin"></span></td>
+      <td id="\${rowId}-geo">...</td>
+      <td id="\${rowId}-isp">...</td>
+    \`;
+    resultBody.prepend(tr);
+
+    // 并行执行 TCPing 和 GeoIP
+    const cleanIP = realTarget.replace(/[\\[\\]]/g, ''); // 移除IPv6括号
+    
+    // 1. TCPing
+    fetch(\`./api/tcping?target=\${encodeURIComponent(cleanIP)}\`)
+      .then(r => r.json())
+      .then(d => {
+        const el = document.getElementById(\`\${rowId}-rtt\`);
+        if(d.status === 'success') {
+          let cls = 'rtt-green';
+          if(d.rtt > 100) cls = 'rtt-yellow';
+          if(d.rtt > 250) cls = 'rtt-red';
+          el.innerHTML = \`<span class="rtt-badge \${cls}">\${d.rtt} ms</span>\`;
+        } else {
+          el.innerHTML = \`<span style="color:#ef4444; font-size:12px">连接超时</span>\`;
+        }
+      });
+
+    // 2. GeoIP (机房信息)
+    fetch(\`./api/geoip?target=\${encodeURIComponent(cleanIP)}\`)
+      .then(r => r.json())
+      .then(d => {
+        document.getElementById(\`\${rowId}-geo\`).innerText = \`\${d.country||''} \${d.city||''}\`;
+        // 组合 ISP 和 AS 信息作为"机房信息"
+        const machineRoom = d.isp || d.org || '未知';
+        const asn = d.as ? \`(\${d.as})\` : '';
+        document.getElementById(\`\${rowId}-isp\`).innerHTML = \`\${machineRoom} <br><span class="target-sub">\${asn}</span>\`;
+      });
+  }
+  
+  renderHistory();
+</script>
+
 </body>
 </html>`;
 }
