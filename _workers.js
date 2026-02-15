@@ -39,13 +39,10 @@ export default {
         }
       }
 
-      // 获取参数中的IP或使用默认IP
       const proxyIP = url.searchParams.get('proxyip').toLowerCase();
       const colo = request.cf?.colo || 'CF';
-      // 调用CheckProxyIP函数
       const result = await CheckProxyIP(proxyIP, colo);
 
-      // 返回JSON响应，根据检查结果设置不同的状态码
       return new Response(JSON.stringify(result, null, 2), {
         status: result.success ? 200 : 502,
         headers: {
@@ -54,7 +51,6 @@ export default {
         }
       });
     } else if (path.toLowerCase() === '/resolve') {
-      // 检查 Token
       if (!url.searchParams.has('token') || (url.searchParams.get('token') !== 临时TOKEN) && (url.searchParams.get('token') !== 永久TOKEN)) {
         return new Response(JSON.stringify({
           status: "error",
@@ -123,38 +119,21 @@ export default {
       }
 
       try {
-        // 使用Worker代理请求HTTP的IP API
         const response = await fetch(`http://ip-api.com/json/${ip}?lang=zh-CN`);
-
-        if (!response.ok) {
-          throw new Error(`HTTP error: ${response.status}`);
-        }
-
+        if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
         const data = await response.json();
-
-        // 添加时间戳到成功的响应数据中
         data.timestamp = new Date().toISOString();
-
-        // 返回数据给客户端，并添加CORS头
         return new Response(JSON.stringify(data, null, 4), {
           headers: {
             "content-type": "application/json; charset=UTF-8",
             'Access-Control-Allow-Origin': '*'
           }
         });
-
       } catch (error) {
-        console.error("IP查询失败:", error);
         return new Response(JSON.stringify({
           status: "error",
           message: `IP查询失败: ${error.message}`,
-          code: "API_REQUEST_FAILED",
-          query: ip,
-          timestamp: new Date().toISOString(),
-          details: {
-            errorType: error.name,
-            stack: error.stack ? error.stack.split('\n')[0] : null
-          }
+          timestamp: new Date().toISOString()
         }, null, 4), {
           status: 500,
           headers: {
@@ -170,24 +149,21 @@ export default {
         const URL = URLs[Math.floor(Math.random() * URLs.length)];
         return envKey === 'URL302' ? Response.redirect(URL, 302) : fetch(new Request(URL, request));
       } 
-      // === 核心逻辑修改：带 Token 传参可访问 ===
+      // === TOKEN 传参访问逻辑 ===
       else if (env.TOKEN && url.searchParams.get('token') !== 永久TOKEN) {
         return new Response(await nginx(), {
-          headers: {
-            'Content-Type': 'text/html; charset=UTF-8',
-          },
+          headers: { 'Content-Type': 'text/html; charset=UTF-8' },
         });
       } else if (path.toLowerCase() === '/favicon.ico') {
         return Response.redirect(网站图标, 302);
       }
-      // 直接返回HTML页面，传递永久TOKEN供前端JS调用
       return await HTML(hostname, 网站图标, 永久TOKEN);
     }
   }
 };
 
 // ============================================
-// 修复版域名解析函数 (使用 Google DNS 和 AliDNS)
+// 修复版域名解析函数 (Google DNS 和 AliDNS)
 // ============================================
 async function resolveDomain(domain) {
   domain = domain.includes(':') ? domain.split(':')[0] : domain;
@@ -205,22 +181,15 @@ async function resolveDomain(domain) {
       if (!ipv4Res.ok || !ipv6Res.ok) continue;
       const [ipv4Data, ipv6Data] = await Promise.all([ipv4Res.json(), ipv6Res.json()]);
       const ips = [];
-      if (ipv4Data.Answer) {
-        ipv4Data.Answer.filter(r => r.type === 1).forEach(r => ips.push(r.data));
-      }
-      if (ipv6Data.Answer) {
-        ipv6Data.Answer.filter(r => r.type === 28).forEach(r => ips.push(`[${r.data}]`));
-      }
+      if (ipv4Data.Answer) ipv4Data.Answer.filter(r => r.type === 1).forEach(r => ips.push(r.data));
+      if (ipv6Data.Answer) ipv6Data.Answer.filter(r => r.type === 28).forEach(r => ips.push(`[${r.data}]`));
       if (ips.length > 0) return ips;
-    } catch (error) {
-      continue;
-    }
+    } catch (error) { continue; }
   }
-  throw new Error('无法解析域名: 所有 DNS 服务均未返回有效 IP');
+  throw new Error('无法解析域名');
 }
 
 // -------------------------------------------------------------
-// 原有 CheckProxyIP 逻辑（保持完整）
 async function CheckProxyIP(proxyIP, colo = 'CF') {
   let portRemote = 443;
   if (proxyIP.includes('.tp')) {
@@ -264,7 +233,7 @@ async function CheckProxyIP(proxyIP, colo = 'CF') {
       const tls握手 = await 验证反代IP(proxyIP, portRemote);
       return { success: tls握手[0], proxyIP, portRemote, colo, responseTime: tls握手[2], message: tls握手[1], timestamp: new Date().toISOString() };
     }
-    return { success: false, proxyIP, portRemote, colo, message: "无法通过ProxyIP访问Cloudflare", timestamp: new Date().toISOString() };
+    return { success: false, proxyIP, portRemote, colo, message: "无法验证", timestamp: new Date().toISOString() };
   } catch (error) {
     return { success: false, proxyIP: -1, portRemote: -1, colo, message: error.message, timestamp: new Date().toISOString() };
   }
@@ -285,10 +254,8 @@ async function 双重哈希(文本) {
 }
 
 async function 验证反代IP(反代IP地址, 指定端口) {
-  const 最大重试次数 = 4;
-  let 最后错误 = null;
   const 开始时间 = performance.now();
-  for (let i = 0; i < 最大重试次数; i++) {
+  for (let i = 0; i < 4; i++) {
     let TCP接口 = null;
     try {
       TCP接口 = await 带超时连接({ hostname: 反代IP地址, port: 指定端口 }, 1000 + (i * 500));
@@ -298,13 +265,11 @@ async function 验证反代IP(反代IP地址, 指定端口) {
       const { value, 超时 } = await 带超时读取(读取数据, 1500);
       if (!超时 && value && value[0] === 0x16) {
         TCP接口.close();
-        return [true, `第${i + 1}次验证有效`, Math.round(performance.now() - 开始时间)];
+        return [true, `验证有效`, Math.round(performance.now() - 开始时间)];
       }
-      throw new Error("Invalid TLS response");
-    } catch (e) { 最后错误 = e.message; } finally { if (TCP接口) TCP接口.close(); }
-    await new Promise(r => setTimeout(r, 100));
+    } catch (e) {} finally { if (TCP接口) TCP接口.close(); }
   }
-  return [false, 最后错误, -1];
+  return [false, "验证失败", -1];
 }
 
 function 构建TLS握手() {
@@ -314,7 +279,7 @@ function 构建TLS握手() {
 
 async function 带超时连接({ hostname, port }, ms) {
   const socket = connect({ hostname, port });
-  await Promise.race([socket.opened, new Promise((_, r) => setTimeout(() => r("Connect Timeout"), ms))]);
+  await Promise.race([socket.opened, new Promise((_, r) => setTimeout(() => r("Timeout"), ms))]);
   return socket;
 }
 
@@ -326,18 +291,18 @@ function 带超时读取(reader, ms) {
 }
 
 async function nginx() {
-  return `<!DOCTYPE html><html><head><title>Welcome to nginx!</title><style>body{width:35em;margin:0 auto;font-family:Tahoma,Arial,sans-serif;}</style></head><body><h1>Welcome to nginx!</h1><p>If you see this page, the nginx web server is successfully installed.</p></body></html>`;
+  return `<!DOCTYPE html><html><head><title>Welcome to nginx!</title><style>body{width:35em;margin:0 auto;font-family:Tahoma,Arial,sans-serif;}</style></head><body><h1>Welcome to nginx!</h1><p>If you see this page, the web server is successfully installed.</p></body></html>`;
 }
 
 // HTML 界面部分
 async function HTML(hostname, 网站图标, token) {
-  const html = \`<!DOCTYPE html>
+  const html = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-  <meta charset=\"UTF-8\">
-  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Check ProxyIP</title>
-  <link rel=\"icon\" href=\"\${网站图标}\">
+  <link rel="icon" href="${网站图标}">
   <style>
     :root { --primary-color: #3498db; --bg-secondary: #f8f9fa; --text-primary: #2c3e50; }
     body { font-family: 'Inter', sans-serif; background: linear-gradient(135deg, #667eea, #764ba2); min-height: 100vh; padding: 20px; color: var(--text-primary); }
@@ -354,44 +319,42 @@ async function HTML(hostname, 网站图标, token) {
   </style>
 </head>
 <body>
-  <div class=\"container\">
-    <h1 style=\"color:white; text-align:center; margin-bottom:40px;\">Check ProxyIP</h1>
-    <div class=\"card\">
-      <label class=\"form-label\">🔍 输入 ProxyIP 地址</label>
-      <div class=\"input-group\">
-        <input type=\"text\" id=\"proxyip\" class=\"form-input\" placeholder=\"例如: 1.2.3.4:443 或 example.com\">
-        <button class=\"btn-primary\" onclick=\"checkProxyIP()\">检测</button>
+  <div class="container">
+    <h1 style="color:white; text-align:center; margin-bottom:40px;">Check ProxyIP</h1>
+    <div class="card">
+      <label class="form-label">🔍 输入 ProxyIP 地址</label>
+      <div class="input-group">
+        <input type="text" id="proxyip" class="form-input" placeholder="例如: 1.2.3.4:443 或 example.com">
+        <button class="btn-primary" onclick="checkProxyIP()">检测</button>
       </div>
-      <div id=\"result\"></div>
+      <div id="result"></div>
     </div>
   </div>
-
   <script>
-    const token = \"\${token}\";
+    const token = "${token}";
     async function checkProxyIP() {
       const input = document.getElementById('proxyip').value.trim();
       const resDiv = document.getElementById('result');
       if(!input) return;
-      resDiv.innerHTML = \"检测中...\"; resDiv.style.display = \"block\";
-      
+      resDiv.innerHTML = "检测中..."; resDiv.style.display = "block";
       try {
         const r = await fetch(\`./check?proxyip=\${encodeURIComponent(input)}&token=\${token}\`);
         const data = await r.json();
         if(data.success) {
           const infoR = await fetch(\`./ip-info?ip=\${data.proxyIP}&token=\${token}\`);
           const info = await infoR.json();
-          resDiv.innerHTML = \`<div class=\"result-card result-success\">
+          resDiv.innerHTML = \`<div class="result-card result-success">
             <h3>✅ ProxyIP 有效</h3>
             <p>IP: \${data.proxyIP} [\${data.responseTime}ms]</p>
-            <p><span class=\"tag\">\${info.country || '未知'}</span><span class=\"tag\">\${info.as || ''}</span></p>
+            <p><span class="tag">\${info.country || '未知'}</span><span class="tag">\${info.as || ''}</span></p>
           </div>\`;
         } else {
-          resDiv.innerHTML = \`<div class=\"result-card result-error\"><h3>❌ ProxyIP 失效</h3><p>\${data.message}</p></div>\`;
+          resDiv.innerHTML = \`<div class="result-card result-error"><h3>❌ ProxyIP 失效</h3><p>\${data.message}</p></div>\`;
         }
-      } catch(e) { resDiv.innerHTML = \"检测失败: \" + e.message; }
+      } catch(e) { resDiv.innerHTML = "检测失败: " + e.message; }
     }
   </script>
 </body>
-</html>\`;
-  return new Response(html, { headers: { \"content-type\": \"text/html;charset=UTF-8\" } });
+</html>`;
+  return new Response(html, { headers: { "content-type": "text/html;charset=UTF-8" } });
 }
